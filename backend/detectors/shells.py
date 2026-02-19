@@ -28,6 +28,10 @@ def detect_shell_networks(G: nx.DiGraph, df: pd.DataFrame):
     def is_high_volume(account):
         return tx_count[account] > HIGH_VOLUME_THRESHOLD
 
+    # For each source, find the LONGEST valid shell chain (avoid sub-chain duplicates)
+    # We collect all valid chains then keep only maximal ones (not subsets of longer chains)
+    all_chains = []
+
     for source in G.nodes():
         if is_high_volume(source):
             continue
@@ -49,23 +53,33 @@ def detect_shell_networks(G: nx.DiGraph, df: pd.DataFrame):
                 if len(new_path) >= 4:
                     intermediates = new_path[1:-1]
                     if all(is_shell(acc) for acc in intermediates):
-                        key = frozenset(new_path)
-                        if key not in visited:
-                            visited.add(key)
-                            rings.append({
-                                "members": new_path,
-                                "pattern_type": "layered_shell_network",
-                                "pattern_key": f"shell_chain_{len(new_path) - 1}_hops",
-                                "chain": new_path,
-                                "temporal": False,
-                            })
+                        all_chains.append(new_path)
 
-                # BUG FIX 4: Continue exploring as long as the NEIGHBOR (which will
-                # become an intermediate in a longer chain) is a shell OR path is still
-                # short enough. Do NOT require the current endpoint to be a shell.
-                if len(new_path) < 6:
-                    next_intermediates = new_path[1:]  # everything after source becomes intermediate
-                    if all(is_shell(acc) for acc in next_intermediates):
-                        stack.append((neighbor, new_path))
+                # Continue exploring if next node will be a valid intermediate (is a shell)
+                if len(new_path) < 6 and is_shell(neighbor):
+                    stack.append((neighbor, new_path))
+
+    # Keep only MAXIMAL chains — remove any chain that is a sub-path of a longer chain
+    maximal_chains = []
+    for chain in all_chains:
+        chain_str = "->".join(chain)
+        is_subchain = any(
+            "->".join(other) != chain_str and chain_str in "->".join(other)
+            for other in all_chains
+        )
+        if not is_subchain:
+            key = frozenset(chain)
+            if key not in visited:
+                visited.add(key)
+                maximal_chains.append(chain)
+
+    for chain in maximal_chains:
+        rings.append({
+            "members": chain,
+            "pattern_type": "layered_shell_network",
+            "pattern_key": f"shell_chain_{len(chain) - 1}_hops",
+            "chain": chain,
+            "temporal": False,
+        })
 
     return rings

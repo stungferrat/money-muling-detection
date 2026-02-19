@@ -13,8 +13,12 @@ def detect_smurfing(G: nx.DiGraph, df: pd.DataFrame):
     rings = []
     visited = set()
 
-    # BUG FIX 6: Build timestamp map per account from df (needed for temporal check)
-    # but use G.degree for transaction counts to avoid double-counting
+    HIGH_VOLUME_THRESHOLD = 50
+    total_degree = {node: G.in_degree(node) + G.out_degree(node) for node in G.nodes()}
+
+    def is_high_volume(node):
+        return total_degree[node] > HIGH_VOLUME_THRESHOLD
+
     account_timestamps = defaultdict(list)
     for _, row in df.iterrows():
         account_timestamps[row["sender_id"]].append(row["timestamp"])
@@ -29,6 +33,10 @@ def detect_smurfing(G: nx.DiGraph, df: pd.DataFrame):
         return False
 
     for node in G.nodes():
+        # Skip high-volume merchants / payroll accounts
+        if is_high_volume(node):
+            continue
+
         in_deg  = G.in_degree(node)
         out_deg = G.out_degree(node)
 
@@ -48,7 +56,9 @@ def detect_smurfing(G: nx.DiGraph, df: pd.DataFrame):
                 })
 
         # Fan-out: one disperser -> many receivers
-        if out_deg >= 10:
+        # Exclude legit merchants: real mules rarely receive money back from their targets
+        # Legit merchants have customers paying them back; mules have in_degree ~0
+        if out_deg >= 10 and in_deg == 0:
             members = [node] + list(G.successors(node))
             key = frozenset(members)
             if key not in visited:
