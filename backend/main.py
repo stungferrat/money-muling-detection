@@ -6,12 +6,13 @@ import networkx as nx
 import io
 import time
 import random
+import concurrent.futures
 from collections import defaultdict
 from typing import Dict, List
 
 from detectors import detect_cycles, detect_smurfing, detect_shell_networks
 
-app = FastAPI(title="RIFT 2026 – Money Muling Detection Engine")
+app = FastAPI(title="RIFT 2026 — Money Muling Detection Engine")
 
 app.add_middleware(
     CORSMiddleware,
@@ -20,31 +21,32 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# ─── Scoring tables ───────────────────────────────────────────────────────────
 PATTERN_SCORES = {
-    "cycle_length_3": 90,
-    "cycle_length_4": 85,
-    "cycle_length_5": 80,
-    "fan_in": 70,
-    "fan_in_hub": 90,
-    "fan_in_hub_temporal": 95,
-    "fan_in_leaf": 75,
-    "fan_in_leaf_temporal": 80,
-    "fan_in_temporal": 85,
-    "fan_out": 70,
-    "fan_out_hub": 90,
-    "fan_out_hub_temporal": 95,
-    "fan_out_leaf": 75,
+    "cycle_length_3":        95,
+    "cycle_length_4":        90,
+    "cycle_length_5":        85,
+    "fan_in":                70,
+    "fan_in_temporal":       80,
+    "fan_in_hub":            85,
+    "fan_in_hub_temporal":   95,
+    "fan_in_leaf":           70,
+    "fan_in_leaf_temporal":  80,
+    "fan_out":               70,
+    "fan_out_temporal":      80,
+    "fan_out_hub":           85,
+    "fan_out_hub_temporal":  95,
+    "fan_out_leaf":          70,
     "fan_out_leaf_temporal": 80,
-    "fan_out_temporal": 85,
     "layered_shell_network": 75,
 }
 
 RING_RISK_BASE = {
-    "cycle_length_3": 95,
-    "cycle_length_4": 92,
-    "cycle_length_5": 90,
-    "smurfing_fan_in": 80,
-    "smurfing_fan_out": 80,
+    "cycle_length_3":        95,
+    "cycle_length_4":        92,
+    "cycle_length_5":        90,
+    "smurfing_fan_in":       85,
+    "smurfing_fan_out":      85,
     "layered_shell_network": 75,
 }
 
@@ -66,6 +68,23 @@ def compute_ring_risk(pattern_type: str, is_temporal: bool) -> float:
     if is_temporal:
         base = min(base + 5, 100)
     return round(float(base), 1)
+
+
+def build_graph(df: pd.DataFrame) -> nx.DiGraph:
+    """
+    Build a weighted directed graph from the dataframe.
+    Aggregates duplicate sender->receiver edges into a single edge with
+    weight = transaction count. Smaller graph = faster algorithm runtime.
+    """
+    G = nx.DiGraph()
+    # Use itertuples (much faster than iterrows) to add weighted edges
+    for row in df[["sender_id", "receiver_id"]].itertuples(index=False):
+        s, r = row[0], row[1]
+        if G.has_edge(s, r):
+            G[s][r]["weight"] += 1
+        else:
+            G.add_edge(s, r, weight=1)
+    return G
 
 
 @app.post("/analyze")
@@ -91,24 +110,57 @@ async def analyze(file: UploadFile = File(...)):
     df["sender_id"]   = df["sender_id"].astype(str)
     df["receiver_id"] = df["receiver_id"].astype(str)
 
-    G = nx.MultiDiGraph()
-    for _, row in df.iterrows():
-        G.add_edge(
-            row["sender_id"], row["receiver_id"],
-            amount=float(row["amount"]),
-            timestamp=row["timestamp"],
-            tx_id=str(row["transaction_id"]),
-        )
+    # Build weighted graph (faster than raw edge list for large datasets)
+    G = build_graph(df)
+    total_accounts = G.number_of_nodes()
 
-    G_simple = nx.DiGraph(G)
-    total_accounts = len(G_simple.nodes())
+    # Decide which detectors to run based on graph size
+    graph_size = total_accounts
+    shell_skipped = graph_size > 2000
+    cycle_timeout = 15 if graph_size <= 1000 else 10
 
-    cycle_rings = detect_cycles(G_simple)
-    smurf_rings = detect_smurfing(G_simple, df)
-    shell_rings = detect_shell_networks(G_simple, df)
+    # ── Timing diagnostics (printed to server logs) ───────────────────────
+    def run_cycles():
+        t = time.time()
+        result = detect_cycles(G)
+        print(f"[TIMING] cycles: {time.time()-t:.2f}s  ({len(result)} rings)")
+        return result
 
+    def run_smurfs():
+        t = time.time()
+        result = detect_smurfing(G, df)
+        print(f"[TIMING] smurfing: {time.time()-t:.2f}s  ({len(result)} rings)")
+        return result
+
+    def run_shells():
+        t = time.time()
+        result = detect_shell_networks(G, df)
+        print(f"[TIMING] shells: {time.time()-t:.2f}s  ({len(result)} rings)")
+        return result
+
+    # ── Run detectors concurrently ────────────────────────────────────────
+    with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
+        f_cycles = executor.submit(run_cycles)
+        f_smurfs = executor.submit(run_smurfs)
+        f_shells = executor.submit(run_shells) if not shell_skipped else None
+
+        try:    cycle_rings = f_cycles.result(timeout=cycle_timeout)
+        except Exception as e:
+            print(f"[WARN] cycles timed out or failed: {e}")
+            cycle_rings = []
+
+        try:    smurf_rings = f_smurfs.result(timeout=10)
+        except Exception as e:
+            print(f"[WARN] smurfing timed out or failed: {e}")
+            smurf_rings = []
+
+        try:    shell_rings = f_shells.result(timeout=10) if f_shells else []
+        except Exception as e:
+            print(f"[WARN] shells timed out or failed: {e}")
+            shell_rings = []
+
+    # ── Deduplicate rings by member frozenset ─────────────────────────────
     all_rings_raw = cycle_rings + smurf_rings + shell_rings
-
     seen_keys = set()
     deduped_rings = []
     for ring in all_rings_raw:
@@ -117,8 +169,9 @@ async def analyze(file: UploadFile = File(...)):
             seen_keys.add(key)
             deduped_rings.append(ring)
 
+    # ── Build account → patterns and ring membership ──────────────────────
     account_patterns: Dict[str, List[str]] = defaultdict(list)
-    account_ring_map: Dict[str, str] = {}
+    account_rings:    Dict[str, List[str]] = defaultdict(list)
     fraud_rings = []
 
     for idx, ring in enumerate(deduped_rings):
@@ -129,15 +182,15 @@ async def analyze(file: UploadFile = File(...)):
         risk = compute_ring_risk(pt, is_temporal)
 
         fraud_rings.append({
-            "ring_id": ring_id,
+            "ring_id":         ring_id,
             "member_accounts": ring["members"],
-            "pattern_type": pt,
-            "risk_score": risk,
+            "pattern_type":    pt,
+            "risk_score":      risk,
         })
 
         hub = ring.get("hub")
         is_smurf = pt in ("smurfing_fan_in", "smurfing_fan_out")
-        t_suffix = "_temporal" if ring.get("temporal", False) else ""
+        t_suffix = "_temporal" if is_temporal else ""
         base_pk = "fan_in" if "fan_in" in pk else ("fan_out" if "fan_out" in pk else pk)
 
         for acc in ring["members"]:
@@ -149,49 +202,65 @@ async def analyze(file: UploadFile = File(...)):
 
             if acc_pk not in account_patterns[acc]:
                 account_patterns[acc].append(acc_pk)
-            if acc not in account_ring_map:
-                account_ring_map[acc] = ring_id
+
+            account_rings[acc].append(ring_id)
 
     suspicious_accounts = []
     for acc, patterns in account_patterns.items():
         score = compute_suspicion_score(patterns)
         suspicious_accounts.append({
-            "account_id": acc,
-            "suspicion_score": score,
+            "account_id":        acc,
+            "suspicion_score":   score,
             "detected_patterns": patterns,
-            "ring_id": account_ring_map.get(acc, ""),
+            "ring_id":           account_rings[acc][0],
+            "all_ring_ids":      account_rings[acc],
         })
 
     suspicious_accounts.sort(key=lambda x: x["suspicion_score"], reverse=True)
     suspicious_set = {a["account_id"] for a in suspicious_accounts}
 
+    # ── Graph visualization — cap at 500 nodes ────────────────────────────
     MAX_NODES = 500
-    if len(G_simple.nodes()) > MAX_NODES:
+    graph_capped = G.number_of_nodes() > MAX_NODES
+    if graph_capped:
         safe_nodes = list(suspicious_set)
-        others = [n for n in G_simple.nodes() if n not in suspicious_set]
+        others = [n for n in G.nodes() if n not in suspicious_set]
         random.shuffle(others)
         keep = set(safe_nodes + others[:MAX_NODES - len(safe_nodes)])
-        sub = G_simple.subgraph(keep)
+        sub = G.subgraph(keep)
     else:
-        sub = G_simple
+        sub = G
 
     score_map = {a["account_id"]: a["suspicion_score"] for a in suspicious_accounts}
-
-    graph_nodes = [{"id": n, "suspicious": n in suspicious_set, "suspicion_score": score_map.get(n, 0)} for n in sub.nodes()]
+    graph_nodes = [
+        {
+            "id": n,
+            "suspicious": n in suspicious_set,
+            "suspicion_score": score_map.get(n, 0),
+        }
+        for n in sub.nodes()
+    ]
     graph_edges = [{"source": u, "target": v} for u, v in sub.edges()]
 
     elapsed = round(time.time() - start, 2)
+    print(f"[TIMING] total: {elapsed}s")
 
     return JSONResponse({
         "suspicious_accounts": suspicious_accounts,
-        "fraud_rings": fraud_rings,
+        "fraud_rings":         fraud_rings,
         "summary": {
-            "total_accounts_analyzed": total_accounts,
+            "total_accounts_analyzed":     total_accounts,
             "suspicious_accounts_flagged": len(suspicious_accounts),
-            "fraud_rings_detected": len(fraud_rings),
-            "processing_time_seconds": elapsed,
+            "fraud_rings_detected":        len(fraud_rings),
+            "processing_time_seconds":     elapsed,
+            "shell_detection_skipped":     shell_skipped,
         },
-        "graph_data": {"nodes": graph_nodes, "edges": graph_edges},
+        "graph_data": {
+            "nodes":     graph_nodes,
+            "edges":     graph_edges,
+            "capped":    graph_capped,
+            "cap_limit": MAX_NODES,
+        },
     })
 
 

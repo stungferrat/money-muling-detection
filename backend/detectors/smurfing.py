@@ -5,71 +5,118 @@ from collections import defaultdict
 
 def detect_smurfing(G: nx.DiGraph, df: pd.DataFrame):
     """
-    Smurfing detection:
-    - Fan-in:  10+ senders -> 1 receiver (aggregation)
-    - Fan-out: 1 sender -> 10+ receivers (dispersion)
-    - Temporal bonus: transactions within 72-hour window are more suspicious
+    Smurfing detection.
+    - Fan-in:  10+ unique senders -> 1 receiver within 72 hours
+    - Fan-out: 1 sender -> 10+ unique receivers within 72 hours (pure originator)
+
+    Key fix: temporal window is now a HARD REQUIREMENT not just a bonus.
+    Normal accounts may have 10+ connections spread over weeks/months —
+    real smurfing has them concentrated within 72 hours.
     """
     rings = []
     visited = set()
 
     HIGH_VOLUME_THRESHOLD = 50
-    total_degree = {node: G.in_degree(node) + G.out_degree(node) for node in G.nodes()}
+    MIN_FAN_IN  = 10
+    MIN_FAN_OUT = 10
+    WINDOW_HOURS = 72
 
     def is_high_volume(node):
-        return total_degree[node] > HIGH_VOLUME_THRESHOLD
+        """Merchants/payroll: very high degree in BOTH directions."""
+        return G.in_degree(node) > HIGH_VOLUME_THRESHOLD and G.out_degree(node) > HIGH_VOLUME_THRESHOLD
 
-    account_timestamps = defaultdict(list)
-    for _, row in df.iterrows():
-        account_timestamps[row["sender_id"]].append(row["timestamp"])
-        account_timestamps[row["receiver_id"]].append(row["timestamp"])
+    # ── Vectorized timestamp building ──────────────────────────────────────
+    # Only process hub candidates to save memory
+    hub_candidates = {
+        n for n in G.nodes()
+        if not is_high_volume(n) and (
+            G.in_degree(n) >= MIN_FAN_IN or
+            (G.out_degree(n) >= MIN_FAN_OUT and G.in_degree(n) == 0)
+        )
+    }
 
-    def has_temporal_cluster(account, window_hours=72):
-        timestamps = sorted(account_timestamps[account])
-        for i in range(len(timestamps) - 1):
-            diff = (timestamps[i + 1] - timestamps[i]).total_seconds() / 3600
-            if diff <= window_hours:
+    def has_fan_in_cluster(account):
+        """
+        Returns True if 'account' received money from MIN_FAN_IN+ UNIQUE
+        senders within any 72-hour window.
+        This is the real smurfing signal — not just high degree.
+        """
+        incoming = df[df["receiver_id"] == account].copy()
+        if incoming["sender_id"].nunique() < MIN_FAN_IN:
+            return False
+        incoming = incoming.sort_values("timestamp")
+        timestamps = incoming["timestamp"].tolist()
+        window = pd.Timedelta(hours=WINDOW_HOURS)
+        for i in range(len(timestamps)):
+            mask = (
+                (incoming["timestamp"] >= timestamps[i]) &
+                (incoming["timestamp"] <= timestamps[i] + window)
+            )
+            if incoming[mask]["sender_id"].nunique() >= MIN_FAN_IN:
                 return True
         return False
 
-    for node in G.nodes():
-        # Skip high-volume merchants / payroll accounts
+    def has_fan_out_cluster(account):
+        """
+        Returns True if 'account' sent money to MIN_FAN_OUT+ UNIQUE
+        receivers within any 72-hour window.
+        """
+        outgoing = df[df["sender_id"] == account].copy()
+        if outgoing["receiver_id"].nunique() < MIN_FAN_OUT:
+            return False
+        outgoing = outgoing.sort_values("timestamp")
+        timestamps = outgoing["timestamp"].tolist()
+        window = pd.Timedelta(hours=WINDOW_HOURS)
+        for i in range(len(timestamps)):
+            mask = (
+                (outgoing["timestamp"] >= timestamps[i]) &
+                (outgoing["timestamp"] <= timestamps[i] + window)
+            )
+            if outgoing[mask]["receiver_id"].nunique() >= MIN_FAN_OUT:
+                return True
+        return False
+
+    for node in hub_candidates:
         if is_high_volume(node):
             continue
 
         in_deg  = G.in_degree(node)
         out_deg = G.out_degree(node)
 
-        # Fan-in: many senders -> one aggregator
-        if in_deg >= 10:
-            members = list(G.predecessors(node)) + [node]
+        # Fan-in: multiple senders → one receiver
+        if in_deg >= MIN_FAN_IN:
+            # HARD REQUIREMENT: must have temporal cluster
+            if not has_fan_in_cluster(node):
+                continue
+            predecessors = list(G.predecessors(node))
+            members = predecessors + [node]
             key = frozenset(members)
             if key not in visited:
                 visited.add(key)
-                temporal = has_temporal_cluster(node)
                 rings.append({
                     "members": members,
-                    "pattern_type": "smurfing_fan_in",
-                    "pattern_key": "fan_in" + ("_temporal" if temporal else ""),
-                    "temporal": temporal,
                     "hub": node,
+                    "pattern_type": "smurfing_fan_in",
+                    "pattern_key": "fan_in_temporal",
+                    "temporal": True,
                 })
 
-        # Fan-out: one disperser -> many receivers
-        # Exclude legit merchants: real mules rarely receive money back from their targets
-        # Legit merchants have customers paying them back; mules have in_degree ~0
-        if out_deg >= 10 and in_deg == 0:
-            members = [node] + list(G.successors(node))
+        # Fan-out: one sender → many receivers (pure originator only)
+        if out_deg >= MIN_FAN_OUT and in_deg == 0:
+            # HARD REQUIREMENT: must have temporal cluster
+            if not has_fan_out_cluster(node):
+                continue
+            successors = list(G.successors(node))
+            members = [node] + successors
             key = frozenset(members)
             if key not in visited:
                 visited.add(key)
-                temporal = has_temporal_cluster(node)
                 rings.append({
                     "members": members,
-                    "pattern_type": "smurfing_fan_out",
-                    "pattern_key": "fan_out" + ("_temporal" if temporal else ""),
-                    "temporal": temporal,
                     "hub": node,
+                    "pattern_type": "smurfing_fan_out",
+                    "pattern_key": "fan_out_temporal",
+                    "temporal": True,
                 })
 
     return rings

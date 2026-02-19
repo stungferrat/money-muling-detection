@@ -6,24 +6,41 @@ const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
 
 // ─── colour helpers ───────────────────────────────────────────────
 function scoreColor(score) {
-  if (score >= 80) return '#ff4757'
+  if (score >= 90) return '#ff4757'
+  if (score >= 75) return '#ff6b35'
   if (score >= 60) return '#ffa502'
   if (score >= 40) return '#f9ca24'
   return '#00f5a0'
 }
 
+// FIXED: complete pattern label map matching all backend-generated pattern keys
 function patternLabel(p) {
   const map = {
-    cycle_length_3: 'Cycle ×3',
-    cycle_length_4: 'Cycle ×4',
-    cycle_length_5: 'Cycle ×5',
-    fan_in: 'Fan-In',
-    fan_in_temporal: 'Fan-In (72h)',
-    fan_out: 'Fan-Out',
-    fan_out_temporal: 'Fan-Out (72h)',
-    layered_shell_network: 'Shell',
+    cycle_length_3:        'Cycle ×3',
+    cycle_length_4:        'Cycle ×4',
+    cycle_length_5:        'Cycle ×5',
+    fan_in:                'Fan-In',
+    fan_in_temporal:       'Fan-In (72h)',
+    fan_in_hub:            'Fan-In Hub',
+    fan_in_hub_temporal:   'Fan-In Hub (72h)',
+    fan_in_leaf:           'Fan-In Leaf',
+    fan_in_leaf_temporal:  'Fan-In Leaf (72h)',
+    fan_out:               'Fan-Out',
+    fan_out_temporal:      'Fan-Out (72h)',
+    fan_out_hub:           'Fan-Out Hub',
+    fan_out_hub_temporal:  'Fan-Out Hub (72h)',
+    fan_out_leaf:          'Fan-Out Leaf',
+    fan_out_leaf_temporal: 'Fan-Out Leaf (72h)',
+    layered_shell_network: 'Shell Network',
   }
-  return map[p] || p
+  return map[p] || p.replace(/_/g, ' ')
+}
+
+function patternColor(p) {
+  if (p.startsWith('cycle'))   return '#00c8f5'
+  if (p.startsWith('fan_in'))  return '#ffa502'
+  if (p.startsWith('fan_out')) return '#a78bfa'
+  return '#64748b'
 }
 
 // ─── tiny components ──────────────────────────────────────────────
@@ -62,7 +79,7 @@ function StatCard({ label, value, accent }) {
   )
 }
 
-// ─── Graph Visualiser (canvas-based, no external lib needed) ──────
+// ─── Graph Visualiser ─────────────────────────────────────────────
 function GraphCanvas({ graphData }) {
   const canvasRef = useRef(null)
   const [tooltip, setTooltip] = useState(null)
@@ -78,7 +95,6 @@ function GraphCanvas({ graphData }) {
     const { nodes, edges } = graphData
     if (!nodes.length) return
 
-    // Layout: force-directed approximation using random + repulsion passes
     const nodeMap = {}
     const positions = nodes.map((n, i) => {
       const angle = (i / nodes.length) * 2 * Math.PI
@@ -89,7 +105,6 @@ function GraphCanvas({ graphData }) {
       return { x, y, ...n }
     })
 
-    // Simple repulsion passes
     for (let iter = 0; iter < 30; iter++) {
       for (let i = 0; i < positions.length; i++) {
         for (let j = i + 1; j < positions.length; j++) {
@@ -107,7 +122,6 @@ function GraphCanvas({ graphData }) {
       }
     }
 
-    // Clamp to canvas
     positions.forEach(p => {
       p.x = Math.max(20, Math.min(W - 20, p.x))
       p.y = Math.max(20, Math.min(H - 20, p.y))
@@ -115,7 +129,6 @@ function GraphCanvas({ graphData }) {
 
     nodesRef.current = positions
 
-    // Draw
     ctx.clearRect(0, 0, W, H)
 
     // Grid background
@@ -143,7 +156,6 @@ function GraphCanvas({ graphData }) {
       ctx.lineWidth = isSuspicious ? 1.5 : 0.8
       ctx.stroke()
 
-      // Arrowhead
       const angle = Math.atan2(t.y - s.y, t.x - s.x)
       const al = 8
       ctx.beginPath()
@@ -187,11 +199,7 @@ function GraphCanvas({ graphData }) {
       const dx = n.x - mx; const dy = n.y - my
       return Math.sqrt(dx * dx + dy * dy) < 12
     })
-    if (hit) {
-      setTooltip({ x: e.clientX, y: e.clientY, node: hit })
-    } else {
-      setTooltip(null)
-    }
+    setTooltip(hit ? { x: e.clientX, y: e.clientY, node: hit } : null)
   }
 
   return (
@@ -232,13 +240,12 @@ function GraphCanvas({ graphData }) {
           )}
         </div>
       )}
-      {/* Legend */}
       <div style={{ display: 'flex', gap: 16, marginTop: 12, fontSize: 11, fontFamily: 'Space Mono, monospace', color: 'var(--text-muted)' }}>
-        <span><span style={{ color: '#ff4757' }}>● </span>High Risk (80+)</span>
-        <span><span style={{ color: '#ffa502' }}>● </span>Medium (60-79)</span>
-        <span><span style={{ color: '#f9ca24' }}>● </span>Low (40-59)</span>
-        <span><span style={{ color: '#00f5a0' }}>● </span>Flagged (&lt;40)</span>
-        <span><span style={{ color: '#1e3a5f' }}>● </span>Clean</span>
+        <span><span style={{ color: '#ff4757' }}>●</span> Critical (90+)</span>
+        <span><span style={{ color: '#ff6b35' }}>●</span> High (75-89)</span>
+        <span><span style={{ color: '#ffa502' }}>●</span> Medium (60-74)</span>
+        <span><span style={{ color: '#f9ca24' }}>●</span> Low (40-59)</span>
+        <span><span style={{ color: '#1e3a5f' }}>●</span> Clean</span>
       </div>
     </div>
   )
@@ -286,13 +293,20 @@ export default function Home() {
     }
   }
 
+  // Download only the fields required by the hackathon spec
   const handleDownload = () => {
     if (!result) return
-    const blob = new Blob([JSON.stringify({
-      suspicious_accounts: result.suspicious_accounts,
+    const exportData = {
+      suspicious_accounts: result.suspicious_accounts.map(a => ({
+        account_id:       a.account_id,
+        suspicion_score:  a.suspicion_score,
+        detected_patterns: a.detected_patterns,
+        ring_id:          a.ring_id,
+      })),
       fraud_rings: result.fraud_rings,
-      summary: result.summary,
-    }, null, 2)], { type: 'application/json' })
+      summary:     result.summary,
+    }
+    const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: 'application/json' })
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a'); a.href = url
     a.download = 'fraud_analysis.json'; a.click()
@@ -342,7 +356,6 @@ export default function Home() {
             Upload a transaction CSV to expose money muling networks through graph analysis.
           </p>
 
-          {/* Drop Zone */}
           <div
             onDragOver={(e) => { e.preventDefault(); setDragging(true) }}
             onDragLeave={() => setDragging(false)}
@@ -426,6 +439,23 @@ export default function Home() {
         {/* Results */}
         {result && (
           <div style={{ animation: 'fadeUp 0.5s ease forwards' }}>
+
+            {/* Warnings */}
+            {(result.summary.shell_detection_skipped || result.graph_data?.capped) && (
+              <div style={{
+                background: '#ffa50215', border: '1px solid #ffa50240',
+                borderRadius: 8, padding: '10px 16px', marginBottom: 20,
+                color: 'var(--warning)', fontSize: 12,
+                fontFamily: 'Space Mono, monospace', display: 'flex', flexDirection: 'column', gap: 4,
+              }}>
+                {result.summary.shell_detection_skipped && (
+                  <div>⚠ Shell network detection was skipped (graph too large — &gt;2000 nodes)</div>
+                )}
+                {result.graph_data?.capped && (
+                  <div>⚠ Graph visualization shows {result.graph_data.cap_limit} of {result.summary.total_accounts_analyzed} accounts (all suspicious nodes are included)</div>
+                )}
+              </div>
+            )}
 
             {/* Summary Stats */}
             <section style={{ marginBottom: 36 }}>
@@ -544,7 +574,7 @@ export default function Home() {
                   <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
                     <thead>
                       <tr style={{ borderBottom: '1px solid var(--border)' }}>
-                        {['Account ID', 'Score', 'Ring ID', 'Detected Patterns'].map(h => (
+                        {['Account ID', 'Score', 'Primary Ring', 'All Rings', 'Detected Patterns'].map(h => (
                           <th key={h} style={{
                             textAlign: 'left', padding: '10px 16px',
                             color: 'var(--text-muted)', fontFamily: 'Space Mono, monospace',
@@ -580,10 +610,16 @@ export default function Home() {
                           <td style={{ padding: '12px 16px', fontFamily: 'Space Mono, monospace', color: 'var(--accent)', fontSize: 12 }}>
                             {acc.ring_id}
                           </td>
+                          {/* FIXED: show all rings this account belongs to */}
+                          <td style={{ padding: '12px 16px', fontFamily: 'Space Mono, monospace', color: 'var(--text-muted)', fontSize: 11 }}>
+                            {acc.all_ring_ids && acc.all_ring_ids.length > 1
+                              ? `${acc.all_ring_ids.length} rings`
+                              : '—'}
+                          </td>
                           <td style={{ padding: '12px 16px' }}>
                             <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
                               {acc.detected_patterns.map(p => (
-                                <Badge key={p} label={patternLabel(p)} color="#00c8f5" />
+                                <Badge key={p} label={patternLabel(p)} color={patternColor(p)} />
                               ))}
                             </div>
                           </td>
