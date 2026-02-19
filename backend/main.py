@@ -25,8 +25,16 @@ PATTERN_SCORES = {
     "cycle_length_4": 85,
     "cycle_length_5": 80,
     "fan_in": 70,
+    "fan_in_hub": 90,
+    "fan_in_hub_temporal": 95,
+    "fan_in_leaf": 75,
+    "fan_in_leaf_temporal": 80,
     "fan_in_temporal": 85,
     "fan_out": 70,
+    "fan_out_hub": 90,
+    "fan_out_hub_temporal": 95,
+    "fan_out_leaf": 75,
+    "fan_out_leaf_temporal": 80,
     "fan_out_temporal": 85,
     "layered_shell_network": 75,
 }
@@ -127,9 +135,20 @@ async def analyze(file: UploadFile = File(...)):
             "risk_score": risk,
         })
 
+        hub = ring.get("hub")
+        is_smurf = pt in ("smurfing_fan_in", "smurfing_fan_out")
+        t_suffix = "_temporal" if ring.get("temporal", False) else ""
+        base_pk = "fan_in" if "fan_in" in pk else ("fan_out" if "fan_out" in pk else pk)
+
         for acc in ring["members"]:
-            if pk not in account_patterns[acc]:
-                account_patterns[acc].append(pk)
+            if is_smurf:
+                role = "hub" if acc == hub else "leaf"
+                acc_pk = f"{base_pk}_{role}{t_suffix}"
+            else:
+                acc_pk = pk
+
+            if acc_pk not in account_patterns[acc]:
+                account_patterns[acc].append(acc_pk)
             if acc not in account_ring_map:
                 account_ring_map[acc] = ring_id
 
