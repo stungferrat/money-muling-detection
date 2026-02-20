@@ -1,469 +1,111 @@
 'use client'
 
-import { useState, useRef, useEffect, useCallback } from 'react'
+import { useState, useRef, useCallback, useEffect } from 'react'
+import Dashboard from './dashboard'
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
 
-// ─── helpers ──────────────────────────────────────────────────────
-function scoreColor(score) {
-  if (score >= 90) return '#ff4757'
-  if (score >= 75) return '#ff6b35'
-  if (score >= 60) return '#ffa502'
-  if (score >= 40) return '#f9ca24'
-  return '#00f5a0'
-}
-
-function patternLabel(p) {
-  const map = {
-    cycle_length_3:        'Cycle ×3',
-    cycle_length_4:        'Cycle ×4',
-    cycle_length_5:        'Cycle ×5',
-    fan_in:                'Fan-In',
-    fan_in_temporal:       'Fan-In (72h)',
-    fan_in_hub:            'Fan-In Hub',
-    fan_in_hub_temporal:   'Fan-In Hub (72h)',
-    fan_in_leaf:           'Fan-In Leaf',
-    fan_in_leaf_temporal:  'Fan-In Leaf (72h)',
-    fan_out:               'Fan-Out',
-    fan_out_temporal:      'Fan-Out (72h)',
-    fan_out_hub:           'Fan-Out Hub',
-    fan_out_hub_temporal:  'Fan-Out Hub (72h)',
-    fan_out_leaf:          'Fan-Out Leaf',
-    fan_out_leaf_temporal: 'Fan-Out Leaf (72h)',
-    layered_shell_network: 'Shell Network',
-    shell_chain_3_hops:    'Shell 3-Hop',
-    shell_chain_4_hops:    'Shell 4-Hop',
-  }
-  return map[p] || p.replace(/_/g, ' ')
-}
-
-function patternColor(p) {
-  if (p.startsWith('cycle'))        return '#00c8f5'
-  if (p.startsWith('fan_in'))       return '#ffa502'
-  if (p.startsWith('fan_out'))      return '#a78bfa'
-  if (p.startsWith('shell') || p.startsWith('layered')) return '#00f5a0'
-  return '#64748b'
-}
-
-function patternTypeColor(pt) {
-  if (pt.includes('cycle'))  return '#00c8f5'
-  if (pt.includes('smurf'))  return '#ffa502'
-  if (pt.includes('shell') || pt.includes('layered')) return '#00f5a0'
-  return '#64748b'
-}
-
-// ─── Badge ────────────────────────────────────────────────────────
-function Badge({ label, color }) {
-  return (
-    <span style={{
-      background: color + '22',
-      color,
-      border: `1px solid ${color}55`,
-      borderRadius: 4,
-      padding: '2px 8px',
-      fontSize: 11,
-      fontFamily: 'Space Mono, monospace',
-      whiteSpace: 'nowrap',
-    }}>{label}</span>
-  )
-}
-
-// ─── StatCard ─────────────────────────────────────────────────────
-function StatCard({ label, value, accent, delay = 0 }) {
-  return (
-    <div style={{
-      background: 'linear-gradient(135deg, var(--bg2) 0%, var(--bg3) 100%)',
-      border: `1px solid ${accent}33`,
-      borderRadius: 12,
-      padding: '20px 24px',
-      flex: 1,
-      minWidth: 140,
-      animation: `fadeUp 0.5s ease ${delay}s both`,
-      position: 'relative',
-      overflow: 'hidden',
-    }}>
-      <div style={{
-        position: 'absolute', top: 0, left: 0, right: 0, height: 2,
-        background: `linear-gradient(90deg, transparent, ${accent}, transparent)`,
-      }} />
-      <div style={{
-        fontSize: 30, fontWeight: 800, color: accent,
-        fontFamily: 'Space Mono, monospace', lineHeight: 1,
-      }}>
-        {value}
-      </div>
-      <div style={{
-        fontSize: 11, color: 'var(--text-muted)', marginTop: 6,
-        textTransform: 'uppercase', letterSpacing: 1.5,
-      }}>
-        {label}
-      </div>
-    </div>
-  )
-}
-
-// ─── Graph Canvas with improved force layout ──────────────────────
-function GraphCanvas({ graphData }) {
+// ── Animated network canvas background ────────────────────────────
+function NetworkBackground({ dark }) {
   const canvasRef = useRef(null)
-  const [tooltip, setTooltip] = useState(null)
-  const nodesRef = useRef([])
-  const animFrameRef = useRef(null)
+  const stateRef  = useRef(null)
 
   useEffect(() => {
-    if (!graphData || !canvasRef.current) return
     const canvas = canvasRef.current
+    if (!canvas) return
     const ctx = canvas.getContext('2d')
-    const W = canvas.width
-    const H = canvas.height
-    const { nodes, edges } = graphData
-    if (!nodes.length) return
+    let W, H, raf
 
-    // Build adjacency for edge lookup
-    const edgeSet = new Set(edges.map(e => `${e.source}|${e.target}`))
-    const nodeMap = {}
-
-    // Initial positions — suspicious nodes clustered center, others around ring
-    const suspicious = nodes.filter(n => n.suspicious)
-    const clean = nodes.filter(n => !n.suspicious)
-
-    const positions = []
-    nodes.forEach((n, i) => {
-      nodeMap[n.id] = i
-    })
-
-    // Place suspicious nodes in inner cluster
-    suspicious.forEach((n, i) => {
-      const angle = (i / Math.max(suspicious.length, 1)) * 2 * Math.PI
-      const r = Math.min(W, H) * 0.18
-      positions[nodeMap[n.id]] = {
-        x: W / 2 + r * Math.cos(angle) + (Math.random() - 0.5) * 30,
-        y: H / 2 + r * Math.sin(angle) + (Math.random() - 0.5) * 30,
-        vx: 0, vy: 0, ...n,
-      }
-    })
-
-    // Place clean nodes in outer ring
-    clean.forEach((n, i) => {
-      const angle = (i / Math.max(clean.length, 1)) * 2 * Math.PI
-      const r = Math.min(W, H) * 0.38
-      positions[nodeMap[n.id]] = {
-        x: W / 2 + r * Math.cos(angle) + (Math.random() - 0.5) * 40,
-        y: H / 2 + r * Math.sin(angle) + (Math.random() - 0.5) * 40,
-        vx: 0, vy: 0, ...n,
-      }
-    })
-
-    // Force-directed simulation
-    let iteration = 0
-    const MAX_ITER = 120
-    const PADDING = 60
-
-    function simulate() {
-      if (iteration >= MAX_ITER) {
-        nodesRef.current = positions
-        draw()
-        return
-      }
-
-      const cooling = Math.max(0.1, 1 - iteration / MAX_ITER)
-      const repulseStrength = 1800
-      const attractStrength = 0.03
-      const centerStrength = 0.008  // gentle gravity toward center
-
-      // Reset velocities
-      for (let i = 0; i < positions.length; i++) {
-        positions[i].vx = 0
-        positions[i].vy = 0
-      }
-
-      // Repulsion between all node pairs
-      for (let i = 0; i < positions.length; i++) {
-        for (let j = i + 1; j < positions.length; j++) {
-          const dx = positions[i].x - positions[j].x
-          const dy = positions[i].y - positions[j].y
-          const dist2 = dx * dx + dy * dy || 0.01
-          const dist = Math.sqrt(dist2)
-          const force = repulseStrength / dist2
-          const fx = (dx / dist) * force
-          const fy = (dy / dist) * force
-          positions[i].vx += fx
-          positions[i].vy += fy
-          positions[j].vx -= fx
-          positions[j].vy -= fy
-        }
-      }
-
-      // Attraction along edges
-      edges.forEach(e => {
-        const si = nodeMap[e.source]
-        const ti = nodeMap[e.target]
-        if (si === undefined || ti === undefined) return
-        const dx = positions[ti].x - positions[si].x
-        const dy = positions[ti].y - positions[si].y
-        const dist = Math.sqrt(dx * dx + dy * dy) || 0.1
-        const force = dist * attractStrength
-        const fx = (dx / dist) * force
-        const fy = (dy / dist) * force
-        positions[si].vx += fx
-        positions[si].vy += fy
-        positions[ti].vx -= fx
-        positions[ti].vy -= fy
-      })
-
-      // Gravity toward center (prevents edge drift)
-      positions.forEach(p => {
-        p.vx += (W / 2 - p.x) * centerStrength
-        p.vy += (H / 2 - p.y) * centerStrength
-      })
-
-      // Apply velocities with cooling + soft bounds
-      const maxSpeed = 12 * cooling
-      positions.forEach(p => {
-        const speed = Math.sqrt(p.vx * p.vx + p.vy * p.vy) || 1
-        const scale = Math.min(speed, maxSpeed) / speed
-        p.x += p.vx * scale
-        p.y += p.vy * scale
-        // Soft bounce off walls
-        if (p.x < PADDING)      { p.x = PADDING;      p.vx *= -0.3 }
-        if (p.x > W - PADDING)  { p.x = W - PADDING;  p.vx *= -0.3 }
-        if (p.y < PADDING)      { p.y = PADDING;       p.vy *= -0.3 }
-        if (p.y > H - PADDING)  { p.y = H - PADDING;  p.vy *= -0.3 }
-      })
-
-      iteration++
-      nodesRef.current = positions
-      draw()
-      animFrameRef.current = requestAnimationFrame(simulate)
+    function resize() {
+      W = canvas.width  = window.innerWidth
+      H = canvas.height = window.innerHeight
     }
+    resize()
+    window.addEventListener('resize', resize)
+
+    const count = 55
+    const nodes = Array.from({ length: count }, () => ({
+      x:  Math.random() * window.innerWidth,
+      y:  Math.random() * window.innerHeight,
+      vx: (Math.random() - 0.5) * 0.35,
+      vy: (Math.random() - 0.5) * 0.35,
+      r:  Math.random() * 2.2 + 0.8,
+      hot: Math.random() < 0.14,
+    }))
+    stateRef.current = { nodes }
 
     function draw() {
+      W = canvas.width; H = canvas.height
       ctx.clearRect(0, 0, W, H)
 
-      // Grid background
-      ctx.strokeStyle = '#1e2d4520'
-      ctx.lineWidth = 0.5
-      for (let x = 0; x < W; x += 40) {
-        ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke()
-      }
-      for (let y = 0; y < H; y += 40) {
-        ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke()
-      }
-
-      // Edges
-      edges.forEach(e => {
-        const si = nodeMap[e.source]
-        const ti = nodeMap[e.target]
-        if (si === undefined || ti === undefined) return
-        const s = positions[si]
-        const t = positions[ti]
-        if (!s || !t) return
-        const isSusp = s.suspicious && t.suspicious
-        const color = isSusp ? '#ff4757' : '#1e2d45'
-        const alpha = isSusp ? '60' : '40'
-
-        ctx.beginPath()
-        ctx.moveTo(s.x, s.y)
-        ctx.lineTo(t.x, t.y)
-        ctx.strokeStyle = color + alpha
-        ctx.lineWidth = isSusp ? 1.5 : 0.7
-        ctx.stroke()
-
-        // Arrowhead
-        if (isSusp) {
-          const angle = Math.atan2(t.y - s.y, t.x - s.x)
-          const al = 7
-          ctx.beginPath()
-          ctx.moveTo(t.x, t.y)
-          ctx.lineTo(t.x - al * Math.cos(angle - 0.4), t.y - al * Math.sin(angle - 0.4))
-          ctx.lineTo(t.x - al * Math.cos(angle + 0.4), t.y - al * Math.sin(angle + 0.4))
-          ctx.closePath()
-          ctx.fillStyle = '#ff475780'
-          ctx.fill()
-        }
+      nodes.forEach(n => {
+        n.x += n.vx; n.y += n.vy
+        if (n.x < 0 || n.x > W) n.vx *= -1
+        if (n.y < 0 || n.y > H) n.vy *= -1
       })
 
-      // Nodes
-      positions.forEach(n => {
-        if (!n) return
-        const r = n.suspicious ? 9 : 4
-        const color = n.suspicious ? scoreColor(n.suspicion_score) : '#1e3a5f'
-
-        // Glow for suspicious
-        if (n.suspicious) {
-          const grd = ctx.createRadialGradient(n.x, n.y, 0, n.x, n.y, r + 10)
-          grd.addColorStop(0, color + '40')
-          grd.addColorStop(1, color + '00')
-          ctx.beginPath()
-          ctx.arc(n.x, n.y, r + 10, 0, Math.PI * 2)
-          ctx.fillStyle = grd
-          ctx.fill()
+      // edges
+      for (let i = 0; i < nodes.length; i++) {
+        for (let j = i + 1; j < nodes.length; j++) {
+          const a = nodes[i], b = nodes[j]
+          const dx = a.x - b.x, dy = a.y - b.y
+          const d  = Math.sqrt(dx*dx + dy*dy)
+          if (d < 150) {
+            const opacity = (1 - d/150) * (dark ? 0.22 : 0.12)
+            const hot = a.hot && b.hot
+            ctx.beginPath()
+            ctx.moveTo(a.x, a.y)
+            ctx.lineTo(b.x, b.y)
+            ctx.strokeStyle = hot
+              ? `rgba(255,59,92,${opacity * 1.8})`
+              : dark
+                ? `rgba(0,245,160,${opacity})`
+                : `rgba(0,100,80,${opacity})`
+            ctx.lineWidth = hot ? 1.2 : 0.7
+            ctx.stroke()
+          }
         }
+      }
 
+      // nodes
+      nodes.forEach(n => {
+        const col = n.hot
+          ? (dark ? '#ff3b5c' : '#c0203a')
+          : (dark ? '#00f5a0' : '#007c60')
+        const alpha = dark ? 0.7 : 0.5
         ctx.beginPath()
-        ctx.arc(n.x, n.y, r, 0, Math.PI * 2)
-        ctx.fillStyle = color
+        ctx.arc(n.x, n.y, n.r, 0, Math.PI * 2)
+        ctx.fillStyle = col + Math.round(alpha * 255).toString(16).padStart(2,'0')
         ctx.fill()
-        ctx.strokeStyle = n.suspicious ? color + 'cc' : '#1e2d45'
-        ctx.lineWidth = n.suspicious ? 1.5 : 1
-        ctx.stroke()
+        if (n.hot) {
+          ctx.beginPath()
+          ctx.arc(n.x, n.y, n.r + 4, 0, Math.PI * 2)
+          ctx.strokeStyle = col + '35'
+          ctx.lineWidth = 1.2
+          ctx.stroke()
+        }
       })
+
+      raf = requestAnimationFrame(draw)
     }
-
-    animFrameRef.current = requestAnimationFrame(simulate)
-
+    draw()
     return () => {
-      if (animFrameRef.current) cancelAnimationFrame(animFrameRef.current)
+      cancelAnimationFrame(raf)
+      window.removeEventListener('resize', resize)
     }
-  }, [graphData])
-
-  function handleMouseMove(e) {
-    const canvas = canvasRef.current
-    const rect = canvas.getBoundingClientRect()
-    const scaleX = canvas.width / rect.width
-    const scaleY = canvas.height / rect.height
-    const mx = (e.clientX - rect.left) * scaleX
-    const my = (e.clientY - rect.top) * scaleY
-    const hit = nodesRef.current.find(n => {
-      if (!n) return false
-      const dx = n.x - mx; const dy = n.y - my
-      return Math.sqrt(dx * dx + dy * dy) < 14
-    })
-    setTooltip(hit ? { x: e.clientX, y: e.clientY, node: hit } : null)
-  }
+  }, [dark])
 
   return (
-    <div style={{ position: 'relative' }}>
-      <canvas
-        ref={canvasRef}
-        width={900}
-        height={520}
-        onMouseMove={handleMouseMove}
-        onMouseLeave={() => setTooltip(null)}
-        style={{
-          width: '100%', borderRadius: 10,
-          cursor: 'crosshair',
-          background: 'radial-gradient(ellipse at center, #0a1628 0%, var(--bg) 100%)',
-        }}
-      />
-      {tooltip && (
-        <div style={{
-          position: 'fixed',
-          left: tooltip.x + 14,
-          top: tooltip.y - 10,
-          background: '#0d1420',
-          border: `1px solid ${tooltip.node.suspicious ? scoreColor(tooltip.node.suspicion_score) + '80' : 'var(--border)'}`,
-          borderRadius: 10,
-          padding: '10px 14px',
-          fontSize: 12,
-          fontFamily: 'Space Mono, monospace',
-          zIndex: 100,
-          pointerEvents: 'none',
-          maxWidth: 220,
-          boxShadow: tooltip.node.suspicious ? `0 0 20px ${scoreColor(tooltip.node.suspicion_score)}30` : 'none',
-        }}>
-          <div style={{ color: 'var(--accent)', fontWeight: 700, marginBottom: 4 }}>{tooltip.node.id}</div>
-          {tooltip.node.suspicious ? (
-            <>
-              <div style={{ color: scoreColor(tooltip.node.suspicion_score) }}>
-                Risk Score: {tooltip.node.suspicion_score}
-              </div>
-              <div style={{ color: 'var(--danger)', fontSize: 10, marginTop: 4, letterSpacing: 1 }}>⚠ SUSPICIOUS</div>
-            </>
-          ) : (
-            <div style={{ color: 'var(--text-muted)' }}>Clean account</div>
-          )}
-        </div>
-      )}
-      {/* Legend */}
-      <div style={{
-        display: 'flex', gap: 20, marginTop: 14, flexWrap: 'wrap',
-        fontSize: 11, fontFamily: 'Space Mono, monospace', color: 'var(--text-muted)',
-      }}>
-        {[
-          { color: '#ff4757', label: 'Critical (90+)' },
-          { color: '#ff6b35', label: 'High (75–89)' },
-          { color: '#ffa502', label: 'Medium (60–74)' },
-          { color: '#f9ca24', label: 'Low (40–59)' },
-          { color: '#1e3a5f', label: 'Clean' },
-        ].map(({ color, label }) => (
-          <span key={label} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-            <span style={{
-              width: 8, height: 8, borderRadius: '50%',
-              background: color, display: 'inline-block',
-              boxShadow: color !== '#1e3a5f' ? `0 0 6px ${color}` : 'none',
-            }} />
-            {label}
-          </span>
-        ))}
-      </div>
-    </div>
+    <canvas ref={canvasRef} style={{
+      position: 'fixed', inset: 0, zIndex: 0, pointerEvents: 'none',
+      width: '100%', height: '100%',
+    }} />
   )
 }
 
-// ─── Loading Overlay ──────────────────────────────────────────────
-function LoadingOverlay() {
-  const [dots, setDots] = useState(0)
-  const [phase, setPhase] = useState(0)
-  const phases = [
-    'Parsing CSV data...',
-    'Building transaction graph...',
-    'Detecting cycle patterns...',
-    'Scanning for smurfing...',
-    'Analyzing shell networks...',
-    'Computing risk scores...',
-  ]
-
-  useEffect(() => {
-    const d = setInterval(() => setDots(v => (v + 1) % 4), 400)
-    const p = setInterval(() => setPhase(v => (v + 1) % phases.length), 1800)
-    return () => { clearInterval(d); clearInterval(p) }
-  }, [])
-
-  return (
-    <div style={{
-      background: 'var(--bg2)',
-      border: '1px solid var(--border)',
-      borderRadius: 16,
-      padding: '48px 32px',
-      textAlign: 'center',
-      marginBottom: 40,
-      position: 'relative',
-      overflow: 'hidden',
-    }}>
-      {/* Scanline effect */}
-      <div style={{
-        position: 'absolute', inset: 0, pointerEvents: 'none',
-        background: 'repeating-linear-gradient(0deg, transparent, transparent 2px, rgba(0,245,160,0.015) 2px, rgba(0,245,160,0.015) 4px)',
-      }} />
-
-      {/* Spinner */}
-      <div style={{
-        width: 56, height: 56, margin: '0 auto 24px',
-        border: '3px solid var(--border)',
-        borderTop: '3px solid var(--accent)',
-        borderRight: '3px solid var(--accent2)',
-        borderRadius: '50%',
-        animation: 'spin 0.9s linear infinite',
-      }} />
-
-      <div style={{
-        fontFamily: 'Space Mono, monospace',
-        fontSize: 13,
-        color: 'var(--accent)',
-        letterSpacing: 1,
-        marginBottom: 8,
-      }}>
-        {phases[phase]}{''.padEnd(dots, '.')}
-      </div>
-      <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
-        Running graph analysis on your transaction data
-      </div>
-    </div>
-  )
-}
-
-// ─── MAIN PAGE ────────────────────────────────────────────────────
-export default function Home() {
+// ── Main upload page ───────────────────────────────────────────────
+export default function Page() {
+  const [dark, setDark]         = useState(true)
   const [file, setFile]         = useState(null)
   const [dragging, setDragging] = useState(false)
   const [loading, setLoading]   = useState(false)
@@ -471,513 +113,404 @@ export default function Home() {
   const [result, setResult]     = useState(null)
   const fileInputRef            = useRef(null)
 
-  const handleFile = (f) => {
-    if (!f) return
-    if (!f.name.endsWith('.csv')) {
-      setError('Please upload a valid .csv file'); return
-    }
-    if (f.size > 50 * 1024 * 1024) {
-      setError('File too large. Maximum size is 50MB.'); return
-    }
-    setFile(f); setError(null); setResult(null)
+  // ── Theme tokens ──────────────────────────────────────────────
+  const T = dark ? {
+    pageBg:    'linear-gradient(135deg, #020810 0%, #04080f 45%, #050a14 100%)',
+    glass:     'rgba(8,14,26,0.72)',
+    border:    '#112240',
+    text:      '#e0eaff',
+    muted:     '#4a6080',
+    accent:    '#00f5a0',
+    accent2:   '#00c8f5',
+    danger:    '#ff3b5c',
+    warning:   '#ff9500',
+    heading:   '#ffffff',
+    sub:       '#7a9ac0',
+    btnText:   '#020810',
+    toggleBg:  '#0d1828',
+  } : {
+    pageBg:    'linear-gradient(135deg, #ddeeff 0%, #eaf4ff 50%, #f0f8ff 100%)',
+    glass:     'rgba(255,255,255,0.72)',
+    border:    '#b8d4ec',
+    text:      '#1a2a3a',
+    muted:     '#607090',
+    accent:    '#007c60',
+    accent2:   '#0070b0',
+    danger:    '#c0203a',
+    warning:   '#b06000',
+    heading:   '#061420',
+    sub:       '#406080',
+    btnText:   '#ffffff',
+    toggleBg:  '#cce4f8',
   }
 
-  const handleDrop = useCallback((e) => {
-    e.preventDefault(); setDragging(false)
-    handleFile(e.dataTransfer.files[0])
+  const handleFile = f => {
+    if (!f) return
+    if (!f.name.endsWith('.csv')) { setError('Please upload a valid .csv file'); return }
+    if (f.size > 50*1024*1024)   { setError('File too large. Max 50MB.');        return }
+    setFile(f); setError(null)
+  }
+
+  const handleDrop = useCallback(e => {
+    e.preventDefault(); setDragging(false); handleFile(e.dataTransfer.files[0])
   }, [])
 
-  const handleAnalyze = async () => {
+  const analyze = async () => {
     if (!file) return
-    setLoading(true); setError(null); setResult(null)
-    const fd = new FormData()
-    fd.append('file', file)
+    setLoading(true); setError(null)
+    const fd = new FormData(); fd.append('file', file)
     try {
       const res = await fetch(`${API_URL}/analyze`, { method: 'POST', body: fd })
-      if (!res.ok) {
-        const err = await res.json()
-        throw new Error(err.detail || 'Analysis failed')
-      }
+      if (!res.ok) { const e = await res.json(); throw new Error(e.detail || 'Analysis failed') }
       setResult(await res.json())
     } catch (e) {
       setError(e.message === 'Failed to fetch'
-        ? 'Cannot reach backend. Make sure the API server is running.'
+        ? 'Cannot reach backend. Make sure the API server is running on port 8000.'
         : e.message)
-    } finally {
-      setLoading(false)
-    }
+    } finally { setLoading(false) }
   }
 
-  const handleDownload = () => {
-    if (!result) return
-    const exportData = {
-      suspicious_accounts: result.suspicious_accounts.map(a => ({
-        account_id:        a.account_id,
-        suspicion_score:   a.suspicion_score,
-        detected_patterns: a.detected_patterns,
-        ring_id:           a.ring_id,
-      })),
-      fraud_rings: result.fraud_rings,
-      summary:     result.summary,
-    }
-    const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: 'application/json' })
-    const url  = URL.createObjectURL(blob)
-    const a    = document.createElement('a')
-    a.href     = url
-    a.download = 'fraud_analysis.json'
-    a.click()
-    URL.revokeObjectURL(url)
+  // Navigate to dashboard
+  if (result) {
+    return (
+      <Dashboard
+        result={result} file={file} dark={dark} setDark={setDark}
+        onReset={() => { setResult(null); setFile(null); setError(null) }}
+      />
+    )
   }
 
   return (
-    <div style={{ minHeight: '100vh', background: 'var(--bg)' }}>
+    <div style={{
+      minHeight: '100vh',
+      background: T.pageBg,
+      fontFamily: 'Syne, sans-serif',
+      position: 'relative',
+      overflow: 'hidden',
+      transition: 'background 0.45s ease',
+    }}>
+      <style>{`
+        @import url('https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=Syne:wght@400;600;700;800&display=swap');
+        @keyframes fadeUp  { from{opacity:0;transform:translateY(20px)} to{opacity:1;transform:translateY(0)} }
+        @keyframes spin    { to{transform:rotate(360deg)} }
+        @keyframes blink   { 0%,100%{opacity:1} 50%{opacity:0.2} }
+        @keyframes float   { 0%,100%{transform:translateY(0px)} 50%{transform:translateY(-7px)} }
+        @keyframes glowBtn { 0%,100%{box-shadow:0 0 28px ${T.accent}40} 50%{box-shadow:0 0 52px ${T.accent}70} }
+        @keyframes pulse   { 0%,100%{opacity:1;transform:scale(1)} 50%{opacity:.6;transform:scale(.92)} }
+        * { box-sizing:border-box; margin:0; padding:0; }
+        ::-webkit-scrollbar{width:3px}
+        ::-webkit-scrollbar-thumb{background:${T.border};border-radius:2px}
+      `}</style>
 
-      {/* Header */}
+      {/* Animated bg */}
+      <NetworkBackground dark={dark} />
+
+      {/* Subtle grain overlay */}
+      <div style={{
+        position: 'fixed', inset: 0, zIndex: 1, pointerEvents: 'none',
+        opacity: dark ? 0.55 : 0.2,
+        backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='300' height='300'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='300' height='300' filter='url(%23n)' opacity='.07'/%3E%3C/svg%3E")`,
+        backgroundSize: '200px',
+      }} />
+
+      {/* ── HEADER ─────────────────────────────────────────────── */}
       <header style={{
-        borderBottom: '1px solid var(--border)',
-        padding: '14px 40px',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'space-between',
-        background: 'var(--bg2)',
-        position: 'sticky', top: 0, zIndex: 50,
+        position: 'fixed', top: 0, left: 0, right: 0, zIndex: 100,
+        background: dark ? 'rgba(2,8,16,0.88)' : 'rgba(234,244,255,0.88)',
+        backdropFilter: 'blur(28px)', WebkitBackdropFilter: 'blur(28px)',
+        borderBottom: `1px solid ${T.border}`,
+        height: 60, padding: '0 44px',
+        display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+        transition: 'background 0.45s ease',
       }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
-          {/* Logo mark */}
+        {/* Logo */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 13 }}>
           <div style={{
-            width: 34, height: 34, borderRadius: 8,
-            background: 'linear-gradient(135deg, var(--accent), var(--accent2))',
+            width: 36, height: 36, borderRadius: 10,
+            background: `linear-gradient(135deg,${T.accent}22,${T.accent2}22)`,
+            border: `1.5px solid ${T.accent}55`,
             display: 'flex', alignItems: 'center', justifyContent: 'center',
-            flexShrink: 0,
+            animation: 'float 5s ease infinite',
           }}>
-            <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
-              <circle cx="4" cy="9" r="2.5" fill="#070b12"/>
-              <circle cx="14" cy="4" r="2.5" fill="#070b12"/>
-              <circle cx="14" cy="14" r="2.5" fill="#070b12"/>
-              <line x1="6" y1="8" x2="12" y2="5" stroke="#070b12" strokeWidth="1.5"/>
-              <line x1="6" y1="10" x2="12" y2="13" stroke="#070b12" strokeWidth="1.5"/>
+            <svg width="18" height="18" viewBox="0 0 20 20" fill="none">
+              <circle cx="4"  cy="10" r="2.5" fill={T.accent}  />
+              <circle cx="16" cy="4"  r="2.5" fill={T.accent2} />
+              <circle cx="16" cy="16" r="2.5" fill={T.accent2} />
+              <circle cx="10" cy="10" r="2"   fill={T.danger}  />
+              <line x1="6.2" y1="8.9"  x2="13.8" y2="5.1"  stroke={T.accent}  strokeWidth="1.3"/>
+              <line x1="6.2" y1="11.1" x2="13.8" y2="14.9" stroke={T.accent2} strokeWidth="1.3"/>
             </svg>
           </div>
           <div>
-            <div style={{ fontWeight: 800, fontSize: 15, letterSpacing: 1.5 }}>RIFT 2026</div>
-            <div style={{ fontSize: 10, color: 'var(--text-muted)', fontFamily: 'Space Mono, monospace', letterSpacing: 1 }}>
+            <div style={{ fontWeight:800, fontSize:15, letterSpacing:3, color:T.heading, fontFamily:'Space Mono,monospace' }}>
+              <span style={{color:T.accent}}>R</span>IFT
+              <span style={{color:T.muted, fontSize:11, marginLeft:5}}>2026</span>
+            </div>
+            <div style={{ fontSize:8, color:T.muted, fontFamily:'Space Mono,monospace', letterSpacing:2.5 }}>
               MONEY MULING DETECTION
             </div>
           </div>
         </div>
-        <div style={{
-          fontSize: 11, color: 'var(--text-muted)',
-          fontFamily: 'Space Mono, monospace',
-          display: 'flex', alignItems: 'center', gap: 6,
-        }}>
-          <span style={{ width: 6, height: 6, borderRadius: '50%', background: 'var(--accent)', display: 'inline-block', animation: 'pulse-ring 2s infinite' }} />
-          Graph Theory / Financial Crime Track
+
+        {/* Right */}
+        <div style={{ display:'flex', alignItems:'center', gap:14 }}>
+          <div style={{
+            fontSize:10, color:T.muted, fontFamily:'Space Mono,monospace',
+            display:'flex', alignItems:'center', gap:8,
+          }}>
+            <span style={{
+              width:6, height:6, borderRadius:'50%', background:T.accent,
+              display:'inline-block', animation:'blink 2.2s infinite',
+              boxShadow:`0 0 8px ${T.accent}`,
+            }}/>
+            Graph Theory / Financial Crime Track
+          </div>
+
+          {/* Toggle */}
+          <button onClick={() => setDark(d => !d)} style={{
+            background: T.toggleBg,
+            border: `1px solid ${T.border}`,
+            borderRadius: 30, padding: '5px 14px',
+            cursor: 'pointer', display: 'flex', alignItems:'center', gap:7,
+            fontFamily: 'Space Mono,monospace', fontSize:10, color:T.muted,
+            letterSpacing:.5, transition:'all 0.3s',
+          }}>
+            <span style={{fontSize:14}}>{dark ? '☀️' : '🌙'}</span>
+            {dark ? 'LIGHT' : 'DARK'}
+          </button>
         </div>
       </header>
 
-      <main style={{ maxWidth: 1120, margin: '0 auto', padding: '48px 24px' }}>
+      {/* ── MAIN ───────────────────────────────────────────────── */}
+      <main style={{
+        position: 'relative', zIndex: 10,
+        minHeight: '100vh',
+        display: 'flex', flexDirection:'column',
+        alignItems: 'center', justifyContent:'center',
+        padding: '90px 24px 60px',
+      }}>
 
         {/* Hero */}
-        <section style={{ marginBottom: 48 }}>
-          <div style={{ marginBottom: 6, fontFamily: 'Space Mono, monospace', fontSize: 11, color: 'var(--accent)', letterSpacing: 2 }}>
-            FINANCIAL CRIME DETECTION ENGINE
+        <div style={{ textAlign:'center', marginBottom:52, animation:'fadeUp .7s ease both' }}>
+          {/* Tag */}
+          <div style={{
+            display: 'inline-flex', alignItems:'center', gap:8,
+            background: T.accent+'14', border:`1px solid ${T.accent}30`,
+            borderRadius:20, padding:'5px 18px', marginBottom:24,
+            fontSize:9, fontFamily:'Space Mono,monospace',
+            color:T.accent, letterSpacing:2.5,
+          }}>
+            <span style={{animation:'pulse 2s infinite', fontSize:8}}>◉</span>
+            FINANCIAL CRIME INTELLIGENCE SYSTEM
           </div>
-          <h1 style={{ fontSize: 42, fontWeight: 800, lineHeight: 1.1, marginBottom: 12, letterSpacing: -1 }}>
-            Follow the{' '}
-            <span style={{
-              color: 'transparent',
-              backgroundClip: 'text',
-              WebkitBackgroundClip: 'text',
-              backgroundImage: 'linear-gradient(90deg, var(--accent), var(--accent2))',
-            }}>Money</span>
-          </h1>
-          <p style={{ color: 'var(--text-muted)', fontSize: 15, maxWidth: 520, lineHeight: 1.6 }}>
-            Upload a transaction CSV to expose money muling networks. Detects cycles, smurfing, and shell networks using graph analysis.
-          </p>
-        </section>
 
-        {/* Upload */}
-        <section style={{ marginBottom: 40 }}>
+          {/* Headline */}
+          <h1 style={{
+            fontSize:'clamp(46px,9vw,96px)',
+            fontWeight:800, lineHeight:.98,
+            letterSpacing:-4, marginBottom:22,
+            color:T.heading,
+          }}>
+            Follow the
+            <br/>
+            <span style={{
+              color:'transparent',
+              backgroundClip:'text', WebkitBackgroundClip:'text',
+              backgroundImage:`linear-gradient(100deg,${T.accent} 0%,${T.accent2} 100%)`,
+            }}>money.</span>
+          </h1>
+
+          <p style={{
+            color:T.sub, fontSize:16, maxWidth:460, margin:'0 auto', lineHeight:1.72,
+          }}>
+            Upload a transaction CSV to expose hidden money muling networks.
+            Detects{' '}
+            <span style={{color:T.accent2, fontWeight:600}}>cycles</span>,{' '}
+            <span style={{color:T.warning, fontWeight:600}}>smurfing</span>, and{' '}
+            <span style={{color:T.accent, fontWeight:600}}>shell networks</span>{' '}
+            using graph analysis.
+          </p>
+        </div>
+
+        {/* ── UPLOAD CARD ──────────────────────────────────────── */}
+        <div style={{ width:'100%', maxWidth:540, animation:'fadeUp .7s ease .1s both' }}>
+
+          {/* Drop zone */}
           <div
-            onDragOver={(e) => { e.preventDefault(); setDragging(true) }}
-            onDragLeave={() => setDragging(false)}
+            onDragOver={e=>{ e.preventDefault(); setDragging(true) }}
+            onDragLeave={()=>setDragging(false)}
             onDrop={handleDrop}
-            onClick={() => fileInputRef.current?.click()}
+            onClick={()=>fileInputRef.current?.click()}
             style={{
-              border: `2px dashed ${dragging ? 'var(--accent)' : file ? '#00f5a060' : 'var(--border)'}`,
-              borderRadius: 16,
-              padding: '44px 24px',
-              textAlign: 'center',
-              cursor: 'pointer',
-              background: dragging ? '#00f5a00a' : file ? '#00f5a005' : 'var(--bg2)',
-              transition: 'all 0.2s',
-              marginBottom: 16,
-              position: 'relative',
-              overflow: 'hidden',
+              border: `2px dashed ${dragging ? T.accent : file ? T.accent+'60' : T.border}`,
+              borderRadius: 22,
+              padding: '50px 32px',
+              textAlign: 'center', cursor:'pointer',
+              background: dragging ? T.accent+'0d' : file ? T.accent+'07' : T.glass,
+              backdropFilter: 'blur(20px)', WebkitBackdropFilter:'blur(20px)',
+              transition: 'all 0.25s',
+              marginBottom: 14,
+              position: 'relative', overflow:'hidden',
+              boxShadow: dragging
+                ? `0 0 70px ${T.accent}22`
+                : dark ? '0 12px 50px rgba(0,0,0,.55)' : '0 8px 40px rgba(0,80,160,.1)',
             }}
           >
-            {/* Corner accents */}
-            {[['0','0','right','bottom'],['0','auto','right','top'],['auto','0','left','bottom'],['auto','auto','left','top']].map(([t,b,br,tl], i) => (
+            {/* Corner brackets */}
+            {[
+              {t:0,l:0,bt:true,bl:true},{t:0,r:0,bt:true,br:true},
+              {b:0,l:0,bb:true,bl:true},{b:0,r:0,bb:true,br:true},
+            ].map((c,i)=>(
               <div key={i} style={{
-                position: 'absolute', top: t === '0' ? 0 : 'auto', bottom: b === '0' ? 0 : 'auto',
-                [tl === 'left' ? 'left' : 'right']: 0,
-                width: 16, height: 16,
-                borderTop: tl === 'top' ? `2px solid ${dragging ? 'var(--accent)' : 'var(--border)'}` : 'none',
-                borderBottom: tl === 'bottom' ? `2px solid ${dragging ? 'var(--accent)' : 'var(--border)'}` : 'none',
-                borderLeft: br === 'left' ? `2px solid ${dragging ? 'var(--accent)' : 'var(--border)'}` : 'none',
-                borderRight: br === 'right' ? `2px solid ${dragging ? 'var(--accent)' : 'var(--border)'}` : 'none',
-                transition: 'all 0.2s',
-              }} />
+                position:'absolute',
+                top:    c.t!==undefined?c.t:'auto', bottom:c.b!==undefined?c.b:'auto',
+                left:   c.l!==undefined?c.l:'auto', right: c.r!==undefined?c.r:'auto',
+                width:14, height:14,
+                borderTop:    c.bt?`2px solid ${dragging?T.accent:T.border}`:'none',
+                borderBottom: c.bb?`2px solid ${dragging?T.accent:T.border}`:'none',
+                borderLeft:   c.bl?`2px solid ${dragging?T.accent:T.border}`:'none',
+                borderRight:  c.br?`2px solid ${dragging?T.accent:T.border}`:'none',
+                transition:'all 0.2s',
+              }}/>
             ))}
 
-            <input
-              ref={fileInputRef}
-              type="file"
-              accept=".csv"
-              style={{ display: 'none' }}
-              onChange={(e) => handleFile(e.target.files[0])}
-            />
+            <input ref={fileInputRef} type="file" accept=".csv" style={{display:'none'}}
+              onChange={e=>handleFile(e.target.files[0])}/>
 
-            {/* Upload icon SVG */}
-            <div style={{ marginBottom: 14 }}>
+            {/* Icon */}
+            <div style={{marginBottom:18}}>
               {file ? (
-                <svg width="44" height="44" viewBox="0 0 44 44" fill="none" style={{ margin: '0 auto' }}>
-                  <circle cx="22" cy="22" r="21" stroke="var(--accent)" strokeWidth="1.5" fill="#00f5a010"/>
-                  <path d="M15 22l5 5 9-9" stroke="var(--accent)" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"/>
-                </svg>
+                <div style={{
+                  width:68, height:68, margin:'0 auto', borderRadius:'50%',
+                  background:`radial-gradient(circle,${T.accent}35,${T.accent}0e)`,
+                  border:`2px solid ${T.accent}70`,
+                  display:'flex', alignItems:'center', justifyContent:'center',
+                  fontSize:28, animation:'float 3.5s ease infinite',
+                  color:T.accent,
+                }}>✓</div>
               ) : (
-                <svg width="44" height="44" viewBox="0 0 44 44" fill="none" style={{ margin: '0 auto', opacity: 0.7 }}>
-                  <rect x="8" y="14" width="28" height="22" rx="3" stroke="var(--text-muted)" strokeWidth="1.5" fill="none"/>
-                  <path d="M22 26v-8M18 21l4-4 4 4" stroke="var(--text-muted)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
-                  <rect x="14" y="8" width="8" height="1.5" rx="0.75" fill="var(--text-muted)"/>
-                </svg>
+                <div style={{
+                  width:68, height:68, margin:'0 auto', borderRadius:'50%',
+                  background:dark?'rgba(0,245,160,0.07)':'rgba(0,124,96,0.07)',
+                  border:`1.5px solid ${T.border}`,
+                  display:'flex', alignItems:'center', justifyContent:'center',
+                  animation:'float 5s ease infinite',
+                }}>
+                  <svg width="30" height="30" viewBox="0 0 30 30" fill="none">
+                    <rect x="4" y="11" width="22" height="17" rx="3" stroke={T.muted} strokeWidth="1.5" fill="none"/>
+                    <path d="M15 19v-8M11 14l4-4 4 4" stroke={T.muted} strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"/>
+                    <rect x="10" y="4" width="7" height="1.4" rx=".7" fill={T.muted}/>
+                  </svg>
+                </div>
               )}
             </div>
 
             {file ? (
               <>
-                <div style={{ fontWeight: 700, color: 'var(--accent)', fontSize: 15 }}>{file.name}</div>
-                <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 4 }}>
-                  {(file.size / 1024).toFixed(1)} KB · Click to change file
+                <div style={{fontWeight:700, color:T.accent, fontSize:16, marginBottom:6}}>
+                  {file.name}
+                </div>
+                <div style={{fontSize:11, color:T.muted, fontFamily:'Space Mono,monospace'}}>
+                  {(file.size/1024).toFixed(1)} KB · Click to change file
                 </div>
               </>
             ) : (
               <>
-                <div style={{ fontWeight: 600, marginBottom: 6, fontSize: 15 }}>
+                <div style={{fontWeight:700, fontSize:16, color:T.text, marginBottom:8}}>
                   Drop your CSV here or click to browse
                 </div>
-                <div style={{ fontSize: 12, color: 'var(--text-muted)', fontFamily: 'Space Mono, monospace' }}>
+                <div style={{fontSize:10, color:T.muted, fontFamily:'Space Mono,monospace', letterSpacing:.5}}>
                   transaction_id · sender_id · receiver_id · amount · timestamp
                 </div>
               </>
             )}
           </div>
 
+          {/* Error */}
           {error && (
             <div style={{
-              background: '#ff475712', border: '1px solid #ff475740',
-              borderRadius: 8, padding: '12px 16px', color: 'var(--danger)',
-              fontSize: 13, marginBottom: 16, fontFamily: 'Space Mono, monospace',
-              display: 'flex', alignItems: 'center', gap: 8,
+              background:T.danger+'12', border:`1px solid ${T.danger}40`,
+              borderRadius:10, padding:'11px 16px', color:T.danger,
+              fontSize:11, fontFamily:'Space Mono,monospace',
+              display:'flex', alignItems:'center', gap:10, marginBottom:14,
+              animation:'fadeUp .3s ease',
             }}>
-              <span style={{ fontSize: 16 }}>⚠</span> {error}
+              <span>⚠</span> {error}
             </div>
           )}
 
+          {/* CTA Button */}
           <button
-            onClick={handleAnalyze}
+            onClick={analyze}
             disabled={!file || loading}
             style={{
+              width:'100%',
               background: file && !loading
-                ? 'linear-gradient(135deg, var(--accent), var(--accent2))'
-                : 'var(--border)',
-              color: file && !loading ? '#070b12' : 'var(--text-muted)',
-              border: 'none', borderRadius: 10,
-              padding: '14px 40px',
-              fontFamily: 'Syne, sans-serif',
-              fontWeight: 800, fontSize: 15,
+                ? `linear-gradient(135deg,${T.accent} 0%,${T.accent2} 100%)`
+                : T.border,
+              color: file && !loading ? T.btnText : T.muted,
+              border:'none', borderRadius:14,
+              padding:'17px',
+              fontFamily:'Syne,sans-serif', fontWeight:800, fontSize:16,
               cursor: file && !loading ? 'pointer' : 'not-allowed',
-              transition: 'all 0.2s',
-              display: 'inline-flex', alignItems: 'center', gap: 10,
-              boxShadow: file && !loading ? '0 0 24px rgba(0,245,160,0.25)' : 'none',
+              display:'flex', alignItems:'center', justifyContent:'center', gap:12,
+              boxShadow: file && !loading ? `0 0 36px ${T.accent}38` : 'none',
+              transition:'all 0.2s',
+              animation: file && !loading ? 'glowBtn 2.5s infinite' : 'none',
             }}
           >
             {loading ? (
               <>
                 <span style={{
-                  width: 16, height: 16, border: '2px solid #070b12',
-                  borderTopColor: 'transparent', borderRadius: '50%',
-                  display: 'inline-block', animation: 'spin 0.8s linear infinite',
-                }} />
-                Analyzing...
+                  width:16, height:16,
+                  border:`2.5px solid ${T.btnText}`,
+                  borderTopColor:'transparent',
+                  borderRadius:'50%', display:'inline-block',
+                  animation:'spin .8s linear infinite',
+                }}/>
+                Analyzing Transactions...
               </>
             ) : (
               <>
-                <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-                  <circle cx="7" cy="7" r="5" stroke="#070b12" strokeWidth="1.8"/>
-                  <path d="M11 11l3 3" stroke="#070b12" strokeWidth="1.8" strokeLinecap="round"/>
+                <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
+                  <circle cx="8" cy="8" r="5.5" stroke={file?T.btnText:T.muted} strokeWidth="1.8"/>
+                  <path d="M12.5 12.5l3.5 3.5" stroke={file?T.btnText:T.muted} strokeWidth="1.8" strokeLinecap="round"/>
                 </svg>
                 Analyze Transactions
               </>
             )}
           </button>
-        </section>
 
-        {/* Loading state */}
-        {loading && <LoadingOverlay />}
-
-        {/* Results */}
-        {result && !loading && (
-          <div style={{ animation: 'fadeUp 0.4s ease forwards' }}>
-
-            {/* Warnings */}
-            {(result.summary.shell_detection_skipped || result.graph_data?.capped) && (
-              <div style={{
-                background: '#ffa50212', border: '1px solid #ffa50240',
-                borderRadius: 8, padding: '10px 16px', marginBottom: 20,
-                color: 'var(--warning)', fontSize: 12,
-                fontFamily: 'Space Mono, monospace',
-                display: 'flex', flexDirection: 'column', gap: 4,
+          {/* Feature pills */}
+          <div style={{display:'flex', gap:10, justifyContent:'center', marginTop:26, flexWrap:'wrap'}}>
+            {[
+              {label:'Cycle Detection', color:T.accent2},
+              {label:'Smurfing',        color:T.warning},
+              {label:'Shell Networks',  color:T.accent},
+            ].map(({label,color})=>(
+              <div key={label} style={{
+                background:color+'13', border:`1px solid ${color}30`,
+                borderRadius:20, padding:'5px 14px',
+                fontSize:10, fontFamily:'Space Mono,monospace',
+                color, letterSpacing:.5,
+                display:'flex', alignItems:'center', gap:6,
               }}>
-                {result.summary.shell_detection_skipped && (
-                  <div>⚠ Shell detection skipped — graph exceeds 2,000 nodes</div>
-                )}
-                {result.graph_data?.capped && (
-                  <div>⚠ Showing {result.graph_data.cap_limit} of {result.summary.total_accounts_analyzed} accounts in graph (all suspicious nodes included)</div>
-                )}
+                <span style={{width:5,height:5,borderRadius:'50%',background:color,display:'inline-block'}}/>
+                {label}
               </div>
-            )}
-
-            {/* Summary Stats */}
-            <section style={{ marginBottom: 32 }}>
-              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
-                <h2 style={{ fontWeight: 800, fontSize: 20 }}>Analysis Results</h2>
-                <button
-                  onClick={handleDownload}
-                  style={{
-                    background: 'transparent',
-                    border: '1px solid var(--accent)',
-                    color: 'var(--accent)',
-                    borderRadius: 8, padding: '8px 18px',
-                    fontFamily: 'Space Mono, monospace',
-                    fontSize: 12, cursor: 'pointer',
-                    display: 'flex', alignItems: 'center', gap: 6,
-                    transition: 'all 0.2s',
-                  }}
-                  onMouseEnter={e => e.currentTarget.style.background = '#00f5a010'}
-                  onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
-                >
-                  <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
-                    <path d="M6 1v7M3 5l3 3 3-3M1 10h10" stroke="var(--accent)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
-                  </svg>
-                  Download JSON
-                </button>
-              </div>
-              <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
-                <StatCard label="Accounts Analyzed"    value={result.summary.total_accounts_analyzed}     accent="var(--accent2)"  delay={0} />
-                <StatCard label="Suspicious Accounts"  value={result.summary.suspicious_accounts_flagged} accent="var(--danger)"   delay={0.05} />
-                <StatCard label="Fraud Rings"          value={result.summary.fraud_rings_detected}        accent="var(--warning)"  delay={0.1} />
-                <StatCard label="Processing Time"      value={`${result.summary.processing_time_seconds}s`} accent="var(--accent)" delay={0.15} />
-              </div>
-            </section>
-
-            {/* Graph */}
-            {result.graph_data?.nodes?.length > 0 && (
-              <section style={{
-                background: 'var(--bg2)', border: '1px solid var(--border)',
-                borderRadius: 16, padding: 24, marginBottom: 28,
-                animation: 'fadeUp 0.5s ease 0.1s both',
-              }}>
-                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
-                  <h2 style={{ fontWeight: 800, fontSize: 18 }}>Transaction Graph</h2>
-                  <span style={{ fontSize: 11, color: 'var(--text-muted)', fontFamily: 'Space Mono, monospace' }}>
-                    hover nodes for details
-                  </span>
-                </div>
-                <GraphCanvas graphData={result.graph_data} />
-              </section>
-            )}
-
-            {/* Fraud Rings Table */}
-            {result.fraud_rings.length > 0 && (
-              <section style={{
-                background: 'var(--bg2)', border: '1px solid var(--border)',
-                borderRadius: 16, padding: 24, marginBottom: 28,
-                animation: 'fadeUp 0.5s ease 0.2s both',
-              }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 16 }}>
-                  <h2 style={{ fontWeight: 800, fontSize: 18 }}>Fraud Ring Summary</h2>
-                  <span style={{
-                    background: '#ff475520', color: 'var(--danger)',
-                    border: '1px solid #ff475540',
-                    borderRadius: 20, padding: '2px 10px',
-                    fontSize: 11, fontFamily: 'Space Mono, monospace',
-                  }}>{result.fraud_rings.length} rings</span>
-                </div>
-                <div style={{ overflowX: 'auto' }}>
-                  <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
-                    <thead>
-                      <tr style={{ borderBottom: '1px solid var(--border)' }}>
-                        {['Ring ID', 'Pattern', 'Members', 'Risk Score', 'Accounts'].map(h => (
-                          <th key={h} style={{
-                            textAlign: 'left', padding: '10px 16px',
-                            color: 'var(--text-muted)', fontFamily: 'Space Mono, monospace',
-                            fontSize: 10, textTransform: 'uppercase', letterSpacing: 1.5, fontWeight: 400,
-                          }}>{h}</th>
-                        ))}
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {result.fraud_rings.map((ring, i) => (
-                        <tr key={ring.ring_id} style={{
-                          borderBottom: '1px solid var(--border)',
-                          background: i % 2 === 0 ? 'transparent' : '#ffffff04',
-                          transition: 'background 0.15s',
-                        }}
-                          onMouseEnter={e => e.currentTarget.style.background = '#ffffff08'}
-                          onMouseLeave={e => e.currentTarget.style.background = i % 2 === 0 ? 'transparent' : '#ffffff04'}
-                        >
-                          <td style={{ padding: '12px 16px', fontFamily: 'Space Mono, monospace', color: 'var(--accent)', fontSize: 12 }}>
-                            {ring.ring_id}
-                          </td>
-                          <td style={{ padding: '12px 16px' }}>
-                            <Badge
-                              label={ring.pattern_type.replace(/_/g, ' ').toUpperCase()}
-                              color={patternTypeColor(ring.pattern_type)}
-                            />
-                          </td>
-                          <td style={{ padding: '12px 16px', fontFamily: 'Space Mono, monospace', fontSize: 12 }}>
-                            {ring.member_accounts.length}
-                          </td>
-                          <td style={{ padding: '12px 16px' }}>
-                            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                              <div style={{
-                                width: 40, height: 4, background: 'var(--border)',
-                                borderRadius: 2, overflow: 'hidden',
-                              }}>
-                                <div style={{
-                                  width: `${ring.risk_score}%`, height: '100%',
-                                  background: scoreColor(ring.risk_score), borderRadius: 2,
-                                }} />
-                              </div>
-                              <span style={{ color: scoreColor(ring.risk_score), fontFamily: 'Space Mono, monospace', fontWeight: 700, fontSize: 12 }}>
-                                {ring.risk_score}
-                              </span>
-                            </div>
-                          </td>
-                          <td style={{ padding: '12px 16px', color: 'var(--text-muted)', fontSize: 11, fontFamily: 'Space Mono, monospace', maxWidth: 280 }}>
-                            <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                              {ring.member_accounts.join(', ')}
-                            </div>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              </section>
-            )}
-
-            {/* Suspicious Accounts */}
-            {result.suspicious_accounts.length > 0 && (
-              <section style={{
-                background: 'var(--bg2)', border: '1px solid var(--border)',
-                borderRadius: 16, padding: 24,
-                animation: 'fadeUp 0.5s ease 0.3s both',
-              }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 16 }}>
-                  <h2 style={{ fontWeight: 800, fontSize: 18 }}>Suspicious Accounts</h2>
-                  <span style={{ fontSize: 11, color: 'var(--text-muted)', fontFamily: 'Space Mono, monospace' }}>
-                    sorted by risk score
-                  </span>
-                </div>
-                <div style={{ overflowX: 'auto' }}>
-                  <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
-                    <thead>
-                      <tr style={{ borderBottom: '1px solid var(--border)' }}>
-                        {['Account ID', 'Risk Score', 'Primary Ring', 'All Rings', 'Detected Patterns'].map(h => (
-                          <th key={h} style={{
-                            textAlign: 'left', padding: '10px 16px',
-                            color: 'var(--text-muted)', fontFamily: 'Space Mono, monospace',
-                            fontSize: 10, textTransform: 'uppercase', letterSpacing: 1.5, fontWeight: 400,
-                          }}>{h}</th>
-                        ))}
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {result.suspicious_accounts.slice(0, 50).map((acc, i) => (
-                        <tr key={acc.account_id} style={{
-                          borderBottom: '1px solid var(--border)',
-                          background: i % 2 === 0 ? 'transparent' : '#ffffff04',
-                        }}
-                          onMouseEnter={e => e.currentTarget.style.background = '#ffffff08'}
-                          onMouseLeave={e => e.currentTarget.style.background = i % 2 === 0 ? 'transparent' : '#ffffff04'}
-                        >
-                          <td style={{ padding: '12px 16px', fontFamily: 'Space Mono, monospace', fontSize: 12 }}>
-                            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                              <div style={{
-                                width: 6, height: 6, borderRadius: '50%',
-                                background: scoreColor(acc.suspicion_score),
-                                boxShadow: `0 0 6px ${scoreColor(acc.suspicion_score)}`,
-                                flexShrink: 0,
-                              }} />
-                              {acc.account_id}
-                            </div>
-                          </td>
-                          <td style={{ padding: '12px 16px' }}>
-                            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                              <div style={{ width: 56, height: 5, background: 'var(--border)', borderRadius: 3, overflow: 'hidden' }}>
-                                <div style={{
-                                  width: `${acc.suspicion_score}%`, height: '100%',
-                                  background: scoreColor(acc.suspicion_score), borderRadius: 3,
-                                }} />
-                              </div>
-                              <span style={{ color: scoreColor(acc.suspicion_score), fontFamily: 'Space Mono, monospace', fontSize: 12, fontWeight: 700 }}>
-                                {acc.suspicion_score}
-                              </span>
-                            </div>
-                          </td>
-                          <td style={{ padding: '12px 16px', fontFamily: 'Space Mono, monospace', color: 'var(--accent)', fontSize: 12 }}>
-                            {acc.ring_id}
-                          </td>
-                          <td style={{ padding: '12px 16px', fontFamily: 'Space Mono, monospace', color: 'var(--text-muted)', fontSize: 11 }}>
-                            {acc.all_ring_ids?.length > 1 ? `${acc.all_ring_ids.length} rings` : '—'}
-                          </td>
-                          <td style={{ padding: '12px 16px' }}>
-                            <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
-                              {acc.detected_patterns.map(p => (
-                                <Badge key={p} label={patternLabel(p)} color={patternColor(p)} />
-                              ))}
-                            </div>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                  {result.suspicious_accounts.length > 50 && (
-                    <div style={{ padding: '12px 16px', color: 'var(--text-muted)', fontSize: 12, fontFamily: 'Space Mono, monospace' }}>
-                      + {result.suspicious_accounts.length - 50} more accounts in downloaded JSON
-                    </div>
-                  )}
-                </div>
-              </section>
-            )}
-
-            {result.suspicious_accounts.length === 0 && (
-              <div style={{
-                background: '#00f5a010', border: '1px solid #00f5a040',
-                borderRadius: 12, padding: 40, textAlign: 'center',
-              }}>
-                <div style={{ fontSize: 36, marginBottom: 10 }}>✅</div>
-                <div style={{ fontWeight: 700, fontSize: 16 }}>No suspicious activity detected</div>
-                <div style={{ fontSize: 13, color: 'var(--text-muted)', marginTop: 6 }}>
-                  All accounts appear to be operating normally
-                </div>
-              </div>
-            )}
+            ))}
           </div>
-        )}
+        </div>
       </main>
+
+      {/* Footer label */}
+      <div style={{
+        position:'fixed', bottom:18, left:0, right:0, zIndex:10,
+        textAlign:'center', fontSize:8, color:T.muted,
+        fontFamily:'Space Mono,monospace', letterSpacing:2.5,
+      }}>
+        RIFT 2026 · GRAPH THEORY / FINANCIAL CRIME TRACK
+      </div>
     </div>
   )
 } 
