@@ -22,8 +22,35 @@ def detect_smurfing(G: nx.DiGraph, df: pd.DataFrame):
     WINDOW_HOURS = 72
 
     def is_high_volume(node):
-        """Merchants/payroll: very high degree in BOTH directions."""
-        return G.in_degree(node) > HIGH_VOLUME_THRESHOLD and G.out_degree(node) > HIGH_VOLUME_THRESHOLD
+        """
+        Merchants/payroll: either direction is high volume.
+        Uses OR (not AND) — a merchant that only receives payments has
+        high in-degree but near-zero out-degree and should still be excluded.
+        
+        Key insight: Legitimate merchants have VERY LOW out-degree (~0-2 transactions)
+        even when receiving from many sources. Real money mule hubs actively REDISTRIBUTE.
+        """
+        in_deg  = G.in_degree(node)
+        out_deg = G.out_degree(node)
+
+        # High volume in either direction → likely a merchant or payroll
+        if in_deg > HIGH_VOLUME_THRESHOLD or out_deg > HIGH_VOLUME_THRESHOLD:
+            return True
+
+        # Merchant filter: if a node receives from 10+ senders but sends almost nothing,
+        # it's a merchant/payment receiver, not a mule hub.
+        # Real mule hubs pump money out. Merchants rarely send (maybe refunds/chargebacks).
+        if in_deg >= MIN_FAN_IN and out_deg <= 2:
+            return True
+        
+        # More aggressive merchant detection: any node with in_deg >= 15 
+        # but out_deg < in_deg / 15 is likely a merchant (receives vastly more than sends)
+        if in_deg >= 15 and out_deg > 0:
+            ratio = in_deg / out_deg
+            if ratio >= 15:
+                return True
+
+        return False
 
     # ── Vectorized timestamp building ──────────────────────────────────────
     # Only process hub candidates to save memory

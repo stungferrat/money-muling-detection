@@ -24,7 +24,8 @@ def detect_shell_networks(G: nx.DiGraph, df: pd.DataFrame):
         return tx_count.get(account, 0) <= 3
 
     def is_high_volume(account):
-        return tx_count.get(account, 0) > HIGH_VOLUME_THRESHOLD
+        # OR logic: exclude if high volume in either direction (catches merchants)
+        return (G.in_degree(account) + G.out_degree(account)) > HIGH_VOLUME_THRESHOLD
 
     # Only start from true origins: no incoming edges, not high volume
     source_candidates = [
@@ -85,4 +86,4 @@ def detect_shell_networks(G: nx.DiGraph, df: pd.DataFrame):
                 "temporal": False,
             })
 
-    return rings    
+    return rings
