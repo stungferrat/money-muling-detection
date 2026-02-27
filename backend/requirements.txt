@@ -1,6 +1,9 @@
 fastapi
 uvicorn
-networkx
 pandas
-numpy
+networkx
 python-multipart
+httpx
+groq
+python-dotenv
+numpy
