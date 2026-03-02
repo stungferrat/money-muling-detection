@@ -259,6 +259,11 @@ function GraphCanvas({ graphData, dark }) {
 // ── Dashboard ─────────────────────────────────────────────────────
 export default function Dashboard({ result, file, dark, setDark, onReset }) {
   const [activeTab, setActiveTab] = useState('rings')
+  const [showAll,   setShowAll]   = useState(false)
+
+  const graphData = showAll
+    ? { nodes: result.graph_data.full_nodes, edges: result.graph_data.full_edges,   capped: result.graph_data.capped, cap_limit: result.graph_data.cap_limit }
+    : { nodes: result.graph_data.nodes,      edges: result.graph_data.edges,         capped: result.graph_data.capped, cap_limit: result.graph_data.cap_limit }
 
   const T = dark ? {
     bg:       '#04080f',
@@ -471,26 +476,45 @@ export default function Dashboard({ result, file, dark, setDark, onReset }) {
           {/* Graph header */}
           <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:16,flexShrink:0}}>
             <div>
-              <h2 style={{fontWeight:700,fontSize:20,color:T.heading,letterSpacing:-.5}}>
+              <h2 style={{fontWeight:700,fontSize:20,color:T.heading,letterSpacing:'-.5'}}>
                 Transaction Graph
               </h2>
               <div style={{fontSize:9,color:T.muted,marginTop:3,fontFamily:'Space Mono,monospace',letterSpacing:1.5}}>
-                {result.graph_data.nodes.length} NODES · {result.graph_data.edges.length} EDGES
+                {graphData.nodes.length} NODES · {graphData.edges.length} EDGES
               </div>
             </div>
-            <span style={{
-              background:T.danger+'15',color:T.danger,
-              border:`1px solid ${T.danger}40`,
-              padding:'3px 12px',borderRadius:6,
-              fontSize:10,fontFamily:'Space Mono,monospace',
-            }}>
-              {result.suspicious_accounts.length} flagged
-            </span>
+            <div style={{display:'flex',alignItems:'center',gap:10}}>
+              <button onClick={()=>setShowAll(v=>!v)} style={{
+                background: showAll ? T.accent+'20' : 'transparent',
+                color: showAll ? T.accent : T.muted,
+                border:`1px solid ${showAll ? T.accent+'60' : T.border}`,
+                borderRadius:8, padding:'4px 12px',
+                fontFamily:'Space Mono,monospace', fontSize:9,
+                cursor:'pointer', letterSpacing:.5, transition:'all 0.2s',
+                display:'flex', alignItems:'center', gap:6,
+              }}>
+                <span style={{
+                  width:6,height:6,borderRadius:'50%',
+                  background: showAll ? T.accent : T.muted,
+                  display:'inline-block',
+                  boxShadow: showAll ? `0 0 6px ${T.accent}` : 'none',
+                }}/>
+                {showAll ? 'FRAUD FOCUS' : 'SHOW ALL'}
+              </button>
+              <span style={{
+                background:T.danger+'15',color:T.danger,
+                border:`1px solid ${T.danger}40`,
+                padding:'3px 12px',borderRadius:6,
+                fontSize:10,fontFamily:'Space Mono,monospace',
+              }}>
+                {result.suspicious_accounts.length} flagged
+              </span>
+            </div>
           </div>
 
           {/* Canvas fills remaining space */}
           <div style={{flex:1,minHeight:0}}>
-            <GraphCanvas graphData={result.graph_data} dark={dark}/>
+            <GraphCanvas graphData={graphData} dark={dark}/>
           </div>
 
           {/* Warnings inline */}
